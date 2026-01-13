@@ -6,7 +6,7 @@ import re
 
 app = Flask(__name__)
 
-# Dit onthoudt de resultaten tijdelijk voor de download-knop
+# Tijdelijke opslag voor de resultaten
 last_results = []
 
 def format_rdw_date(date_str):
@@ -61,29 +61,3 @@ def index():
                 content = file.stream.read().decode("utf-8-sig")
                 lines = content.splitlines()
                 raw_kentekens = [re.split(r'[;,]', l)[0].strip().replace('"', '') for l in lines if l.strip()]
-
-                if not raw_kentekens:
-                    error_message = "Bestand is leeg."
-                else:
-                    for i in range(0, len(raw_kentekens), 100):
-                        results.extend(get_rdw_bulk(raw_kentekens[i:i+100]))
-                    
-                    last_results = results
-            except Exception as e:
-                error_message = f"Fout: {str(e)}"
-                
-    return render_template('index.html', results=results, error=error_message)
-
-@app.route('/download')
-def download():
-    global last_results
-    if not last_results:
-        # Als de lijst leeg is (door herstart server), geven we een melding in plaats van een 500 error
-        return "De sessie is verlopen of de lijst is leeg. Voer de scan opnieuw uit.", 400
-    
-    try:
-        # Maak een DataFrame van de opgeslagen resultaten
-        df = pd.DataFrame(last_results)
-        
-        # Maak een CSV in het geheugen
-        output = io.BytesIO
