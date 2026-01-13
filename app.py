@@ -8,24 +8,26 @@ app = Flask(__name__)
 
 last_results = []
 
+def format_rdw_date(date_str):
+    """Zet YYYYMMDD om naar DD-MM-YYYY, anders behoud de originele tekst."""
+    if date_str and isinstance(date_str, str) and len(date_str) == 8 and date_str.isdigit():
+        return f"{date_str[6:8]}-{date_str[4:6]}-{date_str[0:4]}"
+    return date_str
+
 def clean_kenteken(k):
-    """Maakt het kenteken echt schoon en filtert ruis weg."""
+    """Maakt het kenteken schoon en filtert ruis weg."""
     if pd.isna(k):
         return None
-    # Verwijder alles wat geen letter of cijfer is
     clean = re.sub(r'[^a-zA-Z0-9]', '', str(k)).upper()
-    # Een kenteken is in Nederland nooit korter dan 1 teken, 
-    # maar we filteren hier op minimaal 2 om 'troep' in de CSV te negeren
     return clean if len(clean) >= 2 else None
 
 def get_rdw_bulk(kentekens):
-    # Filter de lijst met de nieuwe clean_kenteken functie
     clean_list = [clean_kenteken(k) for k in kentekens if clean_kenteken(k) is not None]
-    
     if not clean_list:
         return []
 
     formatted_list = "','".join(clean_list)
+    # De API-query vraagt nu om merk en handelsbenaming
     url = f"https://opendata.rdw.nl/resource/m9d7-ebf2.json?$where=kenteken in('{formatted_list}')"
     
     results_dict = {}
@@ -36,16 +38,30 @@ def get_rdw_bulk(kentekens):
             for item in data:
                 d1 = item.get("datum_eerste_tenaamstelling_in_nederland", "Onbekend")
                 d2 = item.get("datum_tenaamstelling", "Onbekend")
+                merk = item.get("merk", "Onbekend")
+                model = item.get("handelsbenaming", "Onbekend")
                 
                 results_dict[item['kenteken']] = {
                     "Kenteken": item['kenteken'],
-                    "Eerste_Tenaamstelling_NL": f"{d1[6:8]}-{d1[4:6]}-{d1[0:4]}" if len(d1) == 8 else d1,
-                    "Laatste_Tenaamstelling": f"{d2[6:8]}-{d2[4:6]}-{d2[0:4]}" if len(d2) == 8 else d2
+                    "Merk": merk,
+                    "Model": model,
+                    "Eerste_Tenaamstelling_NL": format_rdw_date(d1),
+                    "Laatste_Tenaamstelling": format_rdw_date(d2)
                 }
     except Exception as e:
         print(f"API Fout: {e}")
     
-    return [results_dict.get(k, {"Kenteken": k, "Eerste_Tenaamstelling_NL": "Niet gevonden", "Laatste_Tenaamstelling": "Niet gevonden"}) for k in clean_list]
+    # Zorg dat we voor elk gevraagd kenteken een rij teruggeven
+    final_results = []
+    for k in clean_list:
+        final_results.append(results_dict.get(k, {
+            "Kenteken": k, 
+            "Merk": "Niet gevonden",
+            "Model": "Niet gevonden",
+            "Eerste_Tenaamstelling_NL": "Niet gevonden", 
+            "Laatste_Tenaamstelling": "Niet gevonden"
+        }))
+    return final_results
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -59,43 +75,12 @@ def index():
             error_message = "Geen bestand geselecteerd."
         else:
             try:
-                # We lezen het bestand eerst in als ruwe tekst om fouten te voorkomen
                 content = file.stream.read().decode("utf-8-sig")
                 lines = content.splitlines()
                 
                 raw_kentekens = []
                 for line in lines:
-                    # We pakken alleen de tekst vóór de eerste komma of puntkomma
-                    # Dit voorkomt de "Expected X fields" foutmeldingen volledig
-                    first_part = re.split(r'[;,]', line)[0].strip()
+                    if not line.strip(): continue
+                    parts = re.split(r'[;,]', line)
+                    first_part = parts[0].strip().replace('"', '')
                     if first_part:
-                        raw_kentekens.append(first_part)
-
-                if not raw_kentekens:
-                    error_message = "Geen data gevonden in het bestand."
-                else:
-                    # Verwerk in batches
-                    for i in range(0, len(raw_kentekens), 100):
-                        batch = raw_kentekens[i:i+100]
-                        results.extend(get_rdw_bulk(batch))
-                    
-                    last_results = results
-            except Exception as e:
-                error_message = f"Fout bij verwerken: {str(e)}"
-                
-    return render_template('index.html', results=results, error=error_message)
-
-@app.route('/download')
-def download():
-    global last_results
-    if not last_results: return "Geen data", 400
-    df_download = pd.DataFrame(last_results)
-    proxy = io.StringIO()
-    df_download.to_csv(proxy, index=False, sep=';')
-    mem = io.BytesIO()
-    mem.write(proxy.getvalue().encode('utf-8'))
-    mem.seek(0)
-    return send_file(mem, mimetype='text/csv', as_attachment=True, download_name='rdw_export.csv')
-
-if __name__ == '__main__':
-    app.run(debug=True)
