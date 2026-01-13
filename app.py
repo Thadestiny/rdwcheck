@@ -5,16 +5,15 @@ import io
 
 app = Flask(__name__)
 
-# Opslag voor de laatste resultaten (voor download-functie)
+# Tijdelijke opslag voor de laatste resultaten
 last_results = []
 
 def get_rdw_bulk(kentekens):
-    """Haalt gegevens op voor een lijst van kentekens in één API-aanroep."""
+    """Haalt gegevens op voor een lijst van kentekens via de RDW API."""
     clean_list = [str(k).replace('-', '').replace(' ', '').upper() for k in kentekens if pd.notna(k)]
     if not clean_list:
         return []
 
-    # RDW API Query met 'where in' filter voor snelheid
     formatted_list = "','".join(clean_list)
     url = f"https://opendata.rdw.nl/resource/m9d7-ebf2.json?$where=kenteken in('{formatted_list}')"
     
@@ -27,7 +26,6 @@ def get_rdw_bulk(kentekens):
                 d1 = item.get("datum_eerste_tenaamstelling_in_nederland", "Onbekend")
                 d2 = item.get("datum_tenaamstelling", "Onbekend")
                 
-                # Formatteer datums van YYYYMMDD naar DD-MM-YYYY
                 results_dict[item['kenteken']] = {
                     "Kenteken": item['kenteken'],
                     "Eerste_Tenaamstelling_NL": f"{d1[6:8]}-{d1[4:6]}-{d1[0:4]}" if len(d1) == 8 else d1,
@@ -57,28 +55,33 @@ def index():
             error_message = "Geen bestand geselecteerd."
         else:
             try:
-                # Lees bestand met utf-8-sig om Excel-problemen te voorkomen
+                # Inlezen met utf-8-sig (voor Excel-export)
                 content = file.stream.read().decode("utf-8-sig")
                 stream = io.StringIO(content)
                 
-                # Automatische detectie van scheidingsteken (komma of puntkomma)
-                df = pd.read_csv(stream, sep=None, engine='python')
+                # VERBETERING: 'on_bad_lines' zorgt dat de app niet crasht op regel 53
+                df = pd.read_csv(
+                    stream, 
+                    sep=None, 
+                    engine='python', 
+                    on_bad_lines='skip'
+                )
 
                 if df.empty:
                     error_message = "Het CSV-bestand lijkt leeg te zijn."
                 else:
+                    # Neem de eerste kolom, ongeacht de naam
                     kentekens = df.iloc[:, 0].dropna().tolist()
+                    
                     if not kentekens:
-                        error_message = "Geen kentekens gevonden in de eerste kolom."
+                        error_message = "Geen kentekens gevonden."
                     else:
-                        # Verwerk in batches van 100
+                        # Verwerk in batches
                         for i in range(0, len(kentekens), 100):
                             batch = kentekens[i:i+100]
                             results.extend(get_rdw_bulk(batch))
                         
                         last_results = results
-                        if not results:
-                            error_message = "De RDW kon geen van deze kentekens vinden."
             except Exception as e:
                 error_message = f"Fout bij inlezen: {str(e)}"
                 
@@ -88,11 +91,11 @@ def index():
 def download():
     global last_results
     if not last_results:
-        return "Geen data beschikbaar", 400
+        return "Geen data", 400
     
     df_download = pd.DataFrame(last_results)
     proxy = io.StringIO()
-    df_download.to_csv(proxy, index=False, sep=';') # Puntkomma is beter voor NL Excel
+    df_download.to_csv(proxy, index=False, sep=';')
     
     mem = io.BytesIO()
     mem.write(proxy.getvalue().encode('utf-8'))
