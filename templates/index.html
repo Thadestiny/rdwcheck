@@ -1,109 +1,86 @@
-from flask import Flask, render_template, request, send_file
-import pandas as pd
-import requests
-import io
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RDW Bulk Checker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 min-h-screen font-sans">
 
-app = Flask(__name__)
+    <div class="max-w-5xl mx-auto py-12 px-4">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl font-black text-blue-800 tracking-tight">RDW KENTAKEN SCANNER</h1>
+            <p class="text-slate-500 mt-2 text-lg">Upload een CSV en ontvang direct de tenaamstellingsdata.</p>
+        </header>
 
-# Opslag voor de laatste resultaten (voor download-functie)
-last_results = []
+        {% if error %}
+        <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-8 rounded-r-lg shadow-sm">
+            <div class="flex items-center">
+                <div class="flex-shrink-0">
+                    <svg class="h-5 w-5 text-red-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>
+                </div>
+                <div class="ml-3">
+                    <p class="text-sm text-red-800 font-medium">{{ error }}</p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
 
-def get_rdw_bulk(kentekens):
-    """Haalt gegevens op voor een lijst van kentekens in één API-aanroep."""
-    clean_list = [str(k).replace('-', '').replace(' ', '').upper() for k in kentekens if pd.notna(k)]
-    if not clean_list:
-        return []
+        <div class="bg-white rounded-3xl shadow-xl border border-slate-200 p-8 mb-10">
+            <form method="POST" enctype="multipart/form-data" class="space-y-6 text-center">
+                <div class="border-4 border-dashed border-slate-100 rounded-2xl p-10 hover:border-blue-200 transition-colors group">
+                    <input type="file" name="file" id="file" accept=".csv" class="hidden" required onchange="this.form.submit()">
+                    <label for="file" class="cursor-pointer">
+                        <div class="bg-blue-100 text-blue-600 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+                            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                        </div>
+                        <span class="text-xl font-bold text-slate-700 block">Klik om CSV te uploaden</span>
+                        <span class="text-slate-400 text-sm italic">Kentekens moeten in de eerste kolom staan</span>
+                    </label>
+                </div>
+                <noscript>
+                    <button type="submit" class="bg-blue-600 text-white px-10 py-3 rounded-full font-bold">Verwerken</button>
+                </noscript>
+            </form>
+        </div>
 
-    # RDW API Query met 'where in' filter voor snelheid
-    formatted_list = "','".join(clean_list)
-    url = f"https://opendata.rdw.nl/resource/m9d7-ebf2.json?$where=kenteken in('{formatted_list}')"
-    
-    results_dict = {}
-    try:
-        response = requests.get(url, timeout=20)
-        if response.status_code == 200:
-            data = response.json()
-            for item in data:
-                d1 = item.get("datum_eerste_tenaamstelling_in_nederland", "Onbekend")
-                d2 = item.get("datum_tenaamstelling", "Onbekend")
-                
-                # Formatteer datums van YYYYMMDD naar DD-MM-YYYY
-                results_dict[item['kenteken']] = {
-                    "Kenteken": item['kenteken'],
-                    "Eerste_Tenaamstelling_NL": f"{d1[6:8]}-{d1[4:6]}-{d1[0:4]}" if len(d1) == 8 else d1,
-                    "Laatste_Tenaamstelling": f"{d2[6:8]}-{d2[4:6]}-{d2[0:4]}" if len(d2) == 8 else d2
-                }
-    except Exception as e:
-        print(f"API Fout: {e}")
-    
-    final_results = []
-    for k in clean_list:
-        final_results.append(results_dict.get(k, {
-            "Kenteken": k, 
-            "Eerste_Tenaamstelling_NL": "Niet gevonden", 
-            "Laatste_Tenaamstelling": "Niet gevonden"
-        }))
-    return final_results
+        {% if results %}
+        <div class="bg-white rounded-3xl shadow-xl border border-slate-200 overflow-hidden">
+            <div class="p-6 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-4">
+                <h2 class="text-2xl font-black text-slate-800">RESULTATEN <span class="text-blue-600 text-lg ml-2">({{ results|length }})</span></h2>
+                <a href="/download" class="w-full sm:w-auto bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3 rounded-2xl font-bold transition shadow-lg flex items-center justify-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    Download CSV
+                </a>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead>
+                        <tr class="bg-slate-100 text-slate-500 text-xs font-black uppercase tracking-widest">
+                            <th class="px-8 py-5">Kenteken</th>
+                            <th class="px-8 py-5">1e Toelating NL</th>
+                            <th class="px-8 py-5">Laatste Tenaamstelling</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        {% for row in results %}
+                        <tr class="hover:bg-blue-50/50 transition-colors">
+                            <td class="px-8 py-4">
+                                <span class="inline-block bg-[#FFD700] text-black px-3 py-1 rounded font-mono font-bold border-2 border-black text-sm shadow-sm uppercase tracking-tighter">
+                                    {{ row.Kenteken }}
+                                </span>
+                            </td>
+                            <td class="px-8 py-4 text-slate-600 font-medium">{{ row.Eerste_Tenaamstelling_NL }}</td>
+                            <td class="px-8 py-4 text-slate-600 font-medium">{{ row.Laatste_Tenaamstelling }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+    </div>
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    global last_results
-    results = []
-    error_message = None
-
-    if request.method == 'POST':
-        file = request.files.get('file')
-        if not file or file.filename == '':
-            error_message = "Geen bestand geselecteerd."
-        else:
-            try:
-                # Lees bestand met utf-8-sig om Excel-problemen te voorkomen
-                content = file.stream.read().decode("utf-8-sig")
-                stream = io.StringIO(content)
-                
-                # Automatische detectie van scheidingsteken (komma of puntkomma)
-                df = pd.read_csv(stream, sep=None, engine='python')
-
-                if df.empty:
-                    error_message = "Het CSV-bestand lijkt leeg te zijn."
-                else:
-                    kentekens = df.iloc[:, 0].dropna().tolist()
-                    if not kentekens:
-                        error_message = "Geen kentekens gevonden in de eerste kolom."
-                    else:
-                        # Verwerk in batches van 100
-                        for i in range(0, len(kentekens), 100):
-                            batch = kentekens[i:i+100]
-                            results.extend(get_rdw_bulk(batch))
-                        
-                        last_results = results
-                        if not results:
-                            error_message = "De RDW kon geen van deze kentekens vinden."
-            except Exception as e:
-                error_message = f"Fout bij inlezen: {str(e)}"
-                
-    return render_template('index.html', results=results, error=error_message)
-
-@app.route('/download')
-def download():
-    global last_results
-    if not last_results:
-        return "Geen data beschikbaar", 400
-    
-    df_download = pd.DataFrame(last_results)
-    proxy = io.StringIO()
-    df_download.to_csv(proxy, index=False, sep=';') # Puntkomma is beter voor NL Excel
-    
-    mem = io.BytesIO()
-    mem.write(proxy.getvalue().encode('utf-8'))
-    mem.seek(0)
-    
-    return send_file(
-        mem,
-        mimetype='text/csv',
-        as_attachment=True,
-        download_name='rdw_export.csv'
-    )
-
-if __name__ == '__main__':
-    app.run(debug=True)
+</body>
+</html>
