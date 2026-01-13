@@ -1,100 +1,125 @@
 import requests
+import io
+import csv
 from flask import Flask, request, render_template_string
 
 app = Flask(__name__)
 
-# De HTML-structuur met CSS voor een nette weergave
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="nl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RDW Kenteken Check</title>
+    <title>RDW Bulk Check</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; justify-content: center; padding: 50px; background-color: #f0f2f5; }
-        .card { background: white; padding: 2.5rem; border-radius: 12px; box-shadow: 0 8px 16px rgba(0,0,0,0.1); width: 100%; max-width: 450px; }
-        h2 { color: #1a1a1a; text-align: center; margin-bottom: 1.5rem; }
-        label { font-size: 0.9rem; color: #666; }
-        input { width: 100%; padding: 12px; margin: 8px 0 18px 0; border: 2px solid #ddd; border-radius: 6px; box-sizing: border-box; text-transform: uppercase; font-weight: bold; font-size: 1.1rem; text-align: center; }
-        input:focus { border-color: #007bff; outline: none; }
-        button { width: 100%; padding: 12px; background-color: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: 600; transition: background 0.2s; }
+        body { font-family: sans-serif; padding: 30px; background-color: #f0f2f5; color: #333; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        h2 { border-bottom: 2px solid #007bff; padding-bottom: 10px; }
+        .section { margin-bottom: 30px; padding: 15px; border: 1px solid #eee; border-radius: 8px; }
+        input[type="text"], input[type="file"] { padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 5px; }
+        button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
         button:hover { background-color: #0056b3; }
-        .result { margin-top: 25px; padding: 20px; background: #f8f9fa; border-left: 5px solid #007bff; border-radius: 4px; line-height: 1.6; }
-        .error { margin-top: 20px; padding: 15px; background: #fff5f5; border-left: 5px solid #ff4d4d; color: #cc0000; border-radius: 4px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #ddd; }
+        th { background-color: #f8f9fa; }
+        .error { color: red; font-size: 0.9rem; }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h2>🚗 RDW Voertuig Check</h2>
-        <form method="GET">
-            <label for="kenteken">Voer het kenteken in:</label>
-            <input type="text" id="kenteken" name="kenteken" placeholder="XX-YY-ZZ" required autofocus>
-            <button type="submit">Gegevens ophalen</button>
-        </form>
+    <div class="container">
+        <h2>🚗 RDW Bulk Kenteken Check</h2>
+        
+        <div class="section">
+            <p><strong>Optie 1: Enkel kenteken</strong></p>
+            <form method="POST">
+                <input type="text" name="kenteken" placeholder="XX-YY-ZZ">
+                <button type="submit">Zoek</button>
+            </form>
+        </div>
 
-        {% if data %}
-        <div class="result">
-            <strong>Merk/Model:</strong> {{ data.merk }} {{ data.handelsbenaming }}<br>
-            <strong>📅 Eerste toelating:</strong> {{ data.eerste_toelating }}<br>
-            <strong>📝 Laatste tenaamstelling:</strong> {{ data.laatste_tenaamstelling }}
+        <div class="section">
+            <p><strong>Optie 2: Bulk upload (CSV of TXT)</strong></p>
+            <form method="POST" enctype="multipart/form-data">
+                <input type="file" name="file" accept=".csv, .txt">
+                <button type="submit">Upload en verwerk</button>
+            </form>
+            <small>Upload een bestand met één kenteken per regel.</small>
         </div>
-        {% elif error %}
-        <div class="error">
-            <strong>Fout:</strong> {{ error }}
-        </div>
+
+        {% if resultaten %}
+        <h3>Resultaten</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Kenteken</th>
+                    <th>Merk/Model</th>
+                    <th>Eerste Toelating</th>
+                    <th>Laatste Tenaamstelling</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in resultaten %}
+                <tr>
+                    <td><strong>{{ r.kenteken }}</strong></td>
+                    <td>{{ r.voertuig }}</td>
+                    <td>{{ r.toelating }}</td>
+                    <td>{{ r.tenaamstelling }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+        {% if error %}
+        <p class="error">{{ error }}</p>
         {% endif %}
     </div>
 </body>
 </html>
 """
 
-def format_rdw_datum(datum_str):
-    """Zet RDW datum (YYYYMMDD) om naar DD-MM-YYYY."""
-    if datum_str and len(str(datum_str)) == 8:
-        s = str(datum_str)
-        return f"{s[6:8]}-{s[4:6]}-{s[0:4]}"
+def format_rdw_datum(d):
+    if d and len(str(d)) == 8:
+        s = str(d); return f"{s[6:8]}-{s[4:6]}-{s[0:4]}"
     return "Niet beschikbaar"
 
-@app.route('/', methods=['GET'])
+def haal_rdw_data(kenteken):
+    schoon = kenteken.replace('-', '').replace(' ', '').upper()
+    try:
+        url = f"https://opendata.rdw.nl/resource/m9d7-ebf2.json?kenteken={schoon}"
+        res = requests.get(url, timeout=5).json()
+        if res:
+            v = res[0]
+            return {
+                "kenteken": kenteken.upper(),
+                "voertuig": f"{v.get('merk', '')} {v.get('handelsbenaming', '')}",
+                "toelating": format_rdw_datum(v.get('datum_eerste_toelating')),
+                "tenaamstelling": format_rdw_datum(v.get('datum_laatste_tenaamstelling') or v.get('datum_tenaamstelling'))
+            }
+    except:
+        pass
+    return {"kenteken": kenteken.upper(), "voertuig": "Niet gevonden", "toelating": "-", "tenaamstelling": "-"}
+
+@app.route('/', methods=['GET', 'POST'])
 def index():
-    kenteken = request.args.get('kenteken')
-    data = None
+    resultaten = []
     error = None
 
-    if kenteken:
-        # Kenteken opschonen voor de API
-        schoon_kenteken = kenteken.replace('-', '').replace(' ', '').upper()
+    if request.method == 'POST':
+        # Check of het een enkel kenteken is
+        enkel_kenteken = request.form.get('kenteken')
+        if enkel_kenteken:
+            resultaten.append(haal_rdw_data(enkel_kenteken))
         
-        # We raadplegen de hoofd-dataset van de RDW
-        url = f"https://opendata.rdw.nl/resource/m9d7-ebf2.json?kenteken={schoon_kenteken}"
-        
-        try:
-            response = requests.get(url, timeout=10)
-            resultaat_lijst = response.json()
-            
-            if resultaat_lijst and len(resultaat_lijst) > 0:
-                v = resultaat_lijst[0]
-                
-                # De RDW API gebruikt soms 'datum_laatste_tenaamstelling' 
-                # en soms 'datum_tenaamstelling'. We proberen beide.
-                raw_tenaamstelling = v.get('datum_laatste_tenaamstelling') or v.get('datum_tenaamstelling')
-                raw_toelating = v.get('datum_eerste_toelating')
+        # Check of het een bestand is
+        elif 'file' in request.files:
+            file = request.files['file']
+            if file.filename != '':
+                stream = io.StringIO(file.stream.read().decode("UTF-8"), newline=None)
+                # Lees regels, strip witruimte en filter lege regels
+                kentekens = [line.strip() for line in stream if line.strip()]
+                for k in kentekens:
+                    resultaten.append(haal_rdw_data(k))
 
-                data = {
-                    "merk": v.get('merk', 'Onbekend'),
-                    "handelsbenaming": v.get('handelsbenaming', 'Onbekend'),
-                    "eerste_toelating": format_rdw_datum(raw_toelating),
-                    "laatste_tenaamstelling": format_rdw_datum(raw_tenaamstelling)
-                }
-            else:
-                error = f"Geen voertuig gevonden voor kenteken: {kenteken}"
-                
-        except Exception as e:
-            error = "Er kon geen verbinding worden gemaakt met de RDW. Probeer het later opnieuw."
-
-    return render_template_string(HTML_TEMPLATE, data=data, error=error)
-
-if __name__ == '__main__':
-    # Poort 5000 is standaard voor Flask, Render regelt de rest via Gunicorn
-    app.run(host='0.0.0.0', port=5000)
+    return render_template_string(HTML_TEMPLATE, resultaten=resultaten, error=
