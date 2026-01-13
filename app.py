@@ -2,15 +2,26 @@ from flask import Flask, render_template, request, send_file
 import pandas as pd
 import requests
 import io
+import re
 
 app = Flask(__name__)
 
-# Tijdelijke opslag voor de laatste resultaten
 last_results = []
 
+def clean_kenteken(k):
+    """Maakt het kenteken echt schoon en filtert ruis weg."""
+    if pd.isna(k):
+        return None
+    # Verwijder alles wat geen letter of cijfer is
+    clean = re.sub(r'[^a-zA-Z0-9]', '', str(k)).upper()
+    # Een kenteken is in Nederland nooit korter dan 1 teken, 
+    # maar we filteren hier op minimaal 2 om 'troep' in de CSV te negeren
+    return clean if len(clean) >= 2 else None
+
 def get_rdw_bulk(kentekens):
-    """Haalt gegevens op voor een lijst van kentekens via de RDW API."""
-    clean_list = [str(k).replace('-', '').replace(' ', '').upper() for k in kentekens if pd.notna(k)]
+    # Filter de lijst met de nieuwe clean_kenteken functie
+    clean_list = [clean_kenteken(k) for k in kentekens if clean_kenteken(k) is not None]
+    
     if not clean_list:
         return []
 
@@ -34,14 +45,7 @@ def get_rdw_bulk(kentekens):
     except Exception as e:
         print(f"API Fout: {e}")
     
-    final_results = []
-    for k in clean_list:
-        final_results.append(results_dict.get(k, {
-            "Kenteken": k, 
-            "Eerste_Tenaamstelling_NL": "Niet gevonden", 
-            "Laatste_Tenaamstelling": "Niet gevonden"
-        }))
-    return final_results
+    return [results_dict.get(k, {"Kenteken": k, "Eerste_Tenaamstelling_NL": "Niet gevonden", "Laatste_Tenaamstelling": "Niet gevonden"}) for k in clean_list]
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -51,62 +55,47 @@ def index():
 
     if request.method == 'POST':
         file = request.files.get('file')
-        if not file or file.filename == '':
+        if not file:
             error_message = "Geen bestand geselecteerd."
         else:
             try:
-                # Inlezen met utf-8-sig (voor Excel-export)
+                # We lezen het bestand eerst in als ruwe tekst om fouten te voorkomen
                 content = file.stream.read().decode("utf-8-sig")
-                stream = io.StringIO(content)
+                lines = content.splitlines()
                 
-                # VERBETERING: 'on_bad_lines' zorgt dat de app niet crasht op regel 53
-                df = pd.read_csv(
-                    stream, 
-                    sep=None, 
-                    engine='python', 
-                    on_bad_lines='skip'
-                )
+                raw_kentekens = []
+                for line in lines:
+                    # We pakken alleen de tekst vóór de eerste komma of puntkomma
+                    # Dit voorkomt de "Expected X fields" foutmeldingen volledig
+                    first_part = re.split(r'[;,]', line)[0].strip()
+                    if first_part:
+                        raw_kentekens.append(first_part)
 
-                if df.empty:
-                    error_message = "Het CSV-bestand lijkt leeg te zijn."
+                if not raw_kentekens:
+                    error_message = "Geen data gevonden in het bestand."
                 else:
-                    # Neem de eerste kolom, ongeacht de naam
-                    kentekens = df.iloc[:, 0].dropna().tolist()
+                    # Verwerk in batches
+                    for i in range(0, len(raw_kentekens), 100):
+                        batch = raw_kentekens[i:i+100]
+                        results.extend(get_rdw_bulk(batch))
                     
-                    if not kentekens:
-                        error_message = "Geen kentekens gevonden."
-                    else:
-                        # Verwerk in batches
-                        for i in range(0, len(kentekens), 100):
-                            batch = kentekens[i:i+100]
-                            results.extend(get_rdw_bulk(batch))
-                        
-                        last_results = results
+                    last_results = results
             except Exception as e:
-                error_message = f"Fout bij inlezen: {str(e)}"
+                error_message = f"Fout bij verwerken: {str(e)}"
                 
     return render_template('index.html', results=results, error=error_message)
 
 @app.route('/download')
 def download():
     global last_results
-    if not last_results:
-        return "Geen data", 400
-    
+    if not last_results: return "Geen data", 400
     df_download = pd.DataFrame(last_results)
     proxy = io.StringIO()
     df_download.to_csv(proxy, index=False, sep=';')
-    
     mem = io.BytesIO()
     mem.write(proxy.getvalue().encode('utf-8'))
     mem.seek(0)
-    
-    return send_file(
-        mem,
-        mimetype='text/csv',
-        as_attachment=True,
-        download_name='rdw_export.csv'
-    )
+    return send_file(mem, mimetype='text/csv', as_attachment=True, download_name='rdw_export.csv')
 
 if __name__ == '__main__':
     app.run(debug=True)
